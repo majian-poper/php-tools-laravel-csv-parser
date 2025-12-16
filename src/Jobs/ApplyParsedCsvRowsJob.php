@@ -45,111 +45,152 @@ class ApplyParsedCsvRowsJob implements ShouldQueue
             ->sortBy('order_number')
             ->pluck('model_type');
 
-        $targetModels = [];
-
         foreach ($modelTypes as $modelType) {
             $modelClass = Relation::getMorphedModel($modelType) ?? $modelType;
 
-            if (! \is_subclass_of($modelClass, HasUniqueKey::class) || ! \is_subclass_of($modelClass, Model::class)) {
+            if (! $this->isUniqueKeyModel($modelClass)) {
                 continue;
             }
-
-            $targetModel = $targetModels[$modelClass] ??= new $modelClass;
 
             $this->file->parsed_rows()
                 ->where('model_type', $modelClass)
                 ->reorder()
                 ->lazyById()
                 ->chunk($this->chunkSize)
-                ->each(fn(LazyCollection $parsedRows) => $this->applyParsedRows(collect($parsedRows), $targetModel));
+                ->each(fn(LazyCollection $parsedRows) => $this->applyParsedRows(collect($parsedRows)));
         }
 
         event(new Events\ParsedCsvApplied($this->file));
     }
 
-    protected function applyParsedRows(Collection $parsedRows, HasUniqueKey & Model $targetModel): void
+    protected function isUniqueKeyModel(Model | string $model): bool
     {
-        $targetModel->newModelQuery()->getConnection()->transaction(
-            function () use ($parsedRows, $targetModel): void {
+        return \is_subclass_of($model, HasUniqueKey::class) && \is_subclass_of($model, Model::class);
+    }
+
+    protected function applyParsedRows(Collection $parsedRows): void
+    {
+        /** @var CsvParsedRow $firstParsedRow */
+        $firstParsedRow = $parsedRows->first();
+
+        $targetModelBuilder = $firstParsedRow->model()->getRelated()->newModelQuery();
+
+        $targetModelBuilder->getConnection()->transaction(
+            function () use ($parsedRows, $targetModelBuilder): void {
                 $grouped = $parsedRows->groupBy(
                     static fn(CsvParsedRow $row): string => \is_null($row->model_id) ? 'create' : 'update'
                 );
 
-                $modelType = \get_class($targetModel);
+                $modelType = \get_class($targetModelBuilder->getModel());
 
                 foreach ($grouped as $type => $group) {
-                    event(new Events\ParsedCsvRowsApplying($group, $modelType));
+                    event(new Events\ParsedCsvRowsApplying($this->file, $group, $modelType));
 
-                    $this->{$type}($group, $targetModel->newModelQuery());
+                    $this->{$type}($targetModelBuilder, $group);
 
-                    event(new Events\ParsedCsvRowsApplied($group, $modelType));
+                    event(new Events\ParsedCsvRowsApplied($this->file, $group, $modelType));
                 }
             }
         );
+
+        $firstParsedRow->newModelQuery()->upsert(
+            $parsedRows->map->getAttributes()->all(),
+            [$firstParsedRow->getKeyName()],
+            ['model_id', 'created_unique_key', 'values']
+        );
     }
 
-    protected function create(Collection $parsedRows, Builder $targetModelBuilder): void
+    protected function create(Builder $targetModelBuilder, Collection $parsedRows): void
     {
-        $targetModelBuilder->fillAndInsert($parsedRows->map->values->all());
+        $this->fillForeignKeys($targetModelBuilder, $parsedRows);
 
-        $targetModel = $targetModelBuilder->getModel();
+        $modelKeys = $this->getApprovableKeys($targetModelBuilder, $parsedRows->pluck('created_unique_key')->all());
 
-        $modelKeys = $targetModelBuilder
-            ->whereIn(DB::raw($targetModel->getUniqueKeyName()), $parsedRows->pluck('model_unique_key'))
-            ->pluck($targetModel->getKeyName(), DB::raw($targetModel->getUniqueKeyName() . ' as model_unique_key'));
+        if ($modelKeys->isNotEmpty()) {
+            $update = Collection::make();
+            $insert = Collection::make();
 
-        if ($modelKeys->isEmpty()) {
+            foreach ($parsedRows as $parsedRow) {
+                if ($modelKeys->has($parsedRow->created_unique_key)) {
+                    $parsedRow->model_id = $modelKeys->get($parsedRow->created_unique_key);
+
+                    $update->push($parsedRow);
+                } else {
+                    $insert->push($parsedRow);
+                }
+            }
+
+            $this->update($targetModelBuilder, $update);
+        }
+
+        $insert = $insert ?? $parsedRows;
+
+        $targetModelBuilder->fillAndInsert($insert->map->values->all());
+
+        $insertModelKeys = $this->getApprovableKeys($targetModelBuilder, $insert->pluck('created_unique_key')->all());
+
+        if ($insertModelKeys->isNotEmpty()) {
+            foreach ($insert as $parsedRow) {
+                $parsedRow->model_id = $insertModelKeys->get($parsedRow->created_unique_key);
+            }
+        }
+    }
+
+    protected function fillForeignKeys(Builder $targetModelBuilder, Collection $parsedRows): void
+    {
+        $foreignUniqueKeys = [];
+
+        foreach ($parsedRows as $parsedRow) {
+            /** @var HasUniqueKey & Model $targetModel */
+            $targetModel = $targetModelBuilder->make()->setRawAttributes($parsedRow->values);
+
+            foreach ($targetModel->getForeignModelKeys() as $foreignModel => $foreignKeyName) {
+                $foreignUniqueKeys[$foreignModel][$parsedRow->values[$foreignKeyName]] = null;
+            }
+
+            $parsedRow->setRelation('model', $targetModel);
+        }
+
+        if (empty($foreignUniqueKeys)) {
             return;
         }
 
-        $parsedRows->filter->isDirty()->isEmpty()
-            ? $this->updateCsvParsedRowsModelId($parsedRows, $modelKeys, $targetModel)
-            : $this->updateCsvParsedRows($parsedRows, $modelKeys);
-    }
-
-    protected function updateCsvParsedRowsModelId(Collection $parsedRows, Collection $modelKeys, HasUniqueKey & Model $targetModel): void
-    {
-        /** @var Builder $builder */
-        $builder = $parsedRows->first()->newModelQuery();
-
-        $uniqueKeys = $parsedRows->pluck('model_unique_key');
-        $pdo = $builder->getConnection()->getPdo();
-
-        $modelId = $modelKeys
-            ->map(
-                static fn(string $key, string $uniqueKey): string => \sprintf(
-                    'when model_unique_key = %s then %s',
-                    $pdo->quote($uniqueKey),
-                    $pdo->quote($key)
-                )
-            )
-            ->implode(' ');
-
-        $builder
-            ->where('model_type', $targetModel->getMorphClass())
-            ->whereIn('model_unique_key', $uniqueKeys)
-            ->update(['model_id' => DB::raw("case {$modelId} end")]);
-    }
-
-    protected function updateCsvParsedRows(Collection $parsedRows, Collection $modelKeys): void
-    {
-        $update = [];
-
-        /** @var CsvParsedRow $row */
-        foreach ($parsedRows as $row) {
-            $modelKey = $modelKeys->get($row->model_unique_key);
-
-            if (! \is_null($modelKey)) {
-                $row->setAttribute('model_id', $modelKey);
-
-                $update[] = $row->getAttributes();
-            }
+        foreach ($foreignUniqueKeys as $foreignModel => &$foreignKeys) {
+            $foreignKeys = $this->file->parsed_rows()
+                ->where('model_type', Relation::getMorphAlias($foreignModel))
+                ->whereNotNull('model_id')
+                ->whereIn('model_unique_key', \array_keys($foreignKeys))
+                ->groupLimit(1, 'model_unique_key')
+                ->pluck('model_id', 'model_unique_key')
+                ->all();
         }
 
-        $parsedRows->first()->newModelQuery()->upsert($update, ['id']);
+        foreach ($parsedRows as $parsedRow) {
+            /** @var HasUniqueKey & Model $targetModel */
+            $targetModel = $parsedRow->getRelation('model');
+
+            foreach ($targetModel->getForeignModelKeys() as $foreignModel => $foreignKeyName) {
+                $foreignKeyValue = $foreignUniqueKeys[$foreignModel][$parsedRow->values[$foreignKeyName]] ?? null;
+
+                $parsedRow->setAttribute("values->{$foreignKeyName}", $foreignKeyValue);
+
+                $targetModel->setAttribute($foreignKeyName, $foreignKeyValue);
+            }
+
+            $parsedRow->created_unique_key = $targetModel->getUniqueKey();
+        }
     }
 
-    protected function update(Collection $parsedRows, Builder $targetModelBuilder): void
+    protected function getApprovableKeys(Builder $targetModelBuilder, array $createdUniqueKeys): Collection
+    {
+        $targetModel = $targetModelBuilder->getModel();
+
+        return $targetModelBuilder
+            ->whereIn(DB::raw($targetModel->getUniqueKeyName()), $createdUniqueKeys)
+            ->pluck($targetModel->getKeyName(), DB::raw($targetModel->getUniqueKeyName() . ' as created_unique_key'));
+    }
+
+    protected function update(Builder $targetModelBuilder, Collection $parsedRows): void
     {
         $update = [];
 

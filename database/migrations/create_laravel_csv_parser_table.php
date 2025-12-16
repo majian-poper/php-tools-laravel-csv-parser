@@ -32,8 +32,9 @@ return new class extends Migration
                 $table->unsignedBigInteger('row_id');
                 $table->unsignedInteger('order_number');
                 $table->string('model_type')->nullable();
-                $table->unsignedBigInteger('model_id')->nullable();
+                $table->string('model_id')->nullable();
                 $table->string('model_unique_key')->nullable();
+                $table->string('created_unique_key')->nullable();
                 $table->jsonb('values');
                 $table->jsonb('errors');
                 $table->timestamps();
@@ -41,7 +42,7 @@ return new class extends Migration
                 $table->index(['file_type', 'file_id', 'no'], 'csv_parsed_rows_file_index');
                 $table->index(['row_id'], 'csv_parsed_rows_row_id_index');
                 $table->index(['model_type', 'model_id'], 'csv_parsed_rows_model_index');
-                $table->index(['model_type', 'model_unique_key'], 'csv_parsed_rows_model_unique_key_index');
+                $table->index(['model_type', 'model_unique_key', 'created_unique_key'], 'csv_parsed_rows_model_unique_key_index');
             }
         );
     }

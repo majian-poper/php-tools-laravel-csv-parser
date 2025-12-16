@@ -22,4 +22,9 @@ class Contact extends Model implements HasUniqueKey
     {
         return $this->email;
     }
+
+    public function getForeignModelKeys(): array
+    {
+        return [];
+    }
 }

@@ -15,8 +15,9 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
  * @property int $row_id
  * @property int $order_number
  * @property string $model_type
- * @property int $model_id
+ * @property string $model_id
  * @property string $model_unique_key
+ * @property string $created_unique_key
  * @property array $values
  * @property array $errors
  * @property-read \PHPTools\LaravelCsvParser\Contracts\CsvFile & Model $file
@@ -34,8 +35,9 @@ class CsvParsedRow extends Model
         'row_id' => 'int',
         'order_number' => 'int',
         'model_type' => 'string',
-        'model_id' => 'int',
+        'model_id' => 'string',
         'model_unique_key' => 'string',
+        'created_unique_key' => 'string',
         'values' => 'json:unicode',
         'errors' => 'json:unicode',
     ];
@@ -49,6 +51,7 @@ class CsvParsedRow extends Model
         'model_type',
         'model_id',
         'model_unique_key',
+        'created_unique_key',
         'values',
         'errors',
     ];

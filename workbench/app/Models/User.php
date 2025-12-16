@@ -50,4 +50,9 @@ class User extends Authenticatable implements HasUniqueKey
     {
         return $this->email;
     }
+
+    public function getForeignModelKeys(): array
+    {
+        return [];
+    }
 }

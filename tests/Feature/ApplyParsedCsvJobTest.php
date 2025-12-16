@@ -55,7 +55,7 @@ test('model id remain same when unique keys collide across model types', functio
         ->where('model_unique_key', $uniqueKey)
         ->first();
 
-    expect($originalParsedRow->model_id)->toBe(2);
+    expect($originalParsedRow->model_id)->toBe('2');
 
     $anotherCsvFile = ContactCsvFile::query()->create([
         'path' => __DIR__ . '/../fixtures/contacts.csv',
@@ -65,5 +65,5 @@ test('model id remain same when unique keys collide across model types', functio
 
     $originalParsedRow->refresh();
 
-    expect($originalParsedRow->model_id)->toBe(2);
+    expect($originalParsedRow->model_id)->toBe('2');
 });

@@ -78,6 +78,7 @@ class ParseCsvRowsJob implements ShouldQueue
             'model_type' => null,
             'model_id' => null,
             'model_unique_key' => null,
+            'created_unique_key' => null,
             'values' => $this->emptyObject(),
             'errors' => $result->toArray(),
         ];
@@ -88,7 +89,8 @@ class ParseCsvRowsJob implements ShouldQueue
         return [
             'model_type' => $result->getMorphClass(),
             'model_id' => $result->getKey(),
-            'model_unique_key' => $result->getUniqueKey(),
+            'model_unique_key' => $uniqueKey = $result->getUniqueKey(),
+            'created_unique_key' => $uniqueKey,
             'values' => $result->getAttributes(),
             'errors' => $this->emptyObject(),
         ];

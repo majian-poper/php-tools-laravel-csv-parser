@@ -22,9 +22,9 @@ class CsvFile extends Model implements ContractsCsvFile
         'path' => 'string',
     ];
 
-    public function getBasename(): string
+    public function getBasename(string $suffix = ''): string
     {
-        return pathinfo($this->path, PATHINFO_BASENAME);
+        return \basename($this->path, $suffix);
     }
 
     public function getSource(): CommaSeparatedValuesInterface
